@@ -14,7 +14,7 @@ def parse_cfg(cfgFile):
     
     file = open(cfgFile, 'r')
     lines = file.readlines()
-    lines=[x.strip(" \n") for x in lines if len(x)>0 and x[0] != '#']
+    lines=[x.strip(" \n") for x in lines if len(x) and x[0] != '#']
     
     block= {}
     blocks =[]
