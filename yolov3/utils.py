@@ -1,9 +1,5 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.autograd import Variable
 import numpy as np
-import cv2
 
 def predict_transform(prediction, inp_dim, anchors, num_classes, CUDA=False):
     batch_size = prediction.size(0)
@@ -34,9 +30,9 @@ def predict_transform(prediction, inp_dim, anchors, num_classes, CUDA=False):
         x_offset = x_offset.cuda()
         y_offset = y_offset.cuda()
         
-    x_y_offset = torch.cat((x_offset, y_offset), 1).repeat(1, num_anchors)
+    x_y_offset = torch.cat((x_offset, y_offset), 1).repeat(1, num_anchors).view(-1, 2).unsqueeze(0)
     
-    prediction[:,:,2] = x_y_offset
+    prediction[:,:,:2] += x_y_offset
     
     anchors = torch.FloatTensor(anchors)
     
@@ -47,8 +43,28 @@ def predict_transform(prediction, inp_dim, anchors, num_classes, CUDA=False):
     prediction[:,:,2:4] = torch.exp(prediction[:,:,2:4])*anchors
     
     # apply sigmoid to class scores
-    prediction[:,:,5:5+num_classes] = torch.sigmoid(prediction[:,:,5:5+num_classes])
+    prediction[:,:,5:5+num_classes] = torch.sigmoid((prediction[:,:,5:5+num_classes]))
     
     prediction[:,:,:4] *= stride
     
     return prediction
+
+def write_results(prediction, confidence, num_classes, nms_conf=0.5):
+    # set all prediction less than confidence to zero
+    conf_mask = (prediction[:,:,4] > confidence).float().unsqueeze(2)
+    prediction = prediction*conf_mask
+    
+    box_corner = prediction.new(prediction.shape)
+    box_corner[:,:,0] = (prediction[:,:,0] - prediction[:,:,2]/2)    
+    box_corner[:,:,1] = (prediction[:,:,1] - prediction[:,:,3]/2)    
+    box_corner[:,:,2] = (prediction[:,:,0] + prediction[:,:,2]/2)    
+    box_corner[:,:,3] = (prediction[:,:,1] + prediction[:,:,3]/2)
+    
+    prediction[:,:,:4] = box_corner[:,:,:4]
+    
+    batch_size = prediction.size(0)
+    write = False
+    for i in range(batch_size):
+        image_pred = prediction[i]
+        max_conf, max_conf_score = torch.max(image_pred[:, 5:5+num_classes], 1)
+        max_conf = max_conf.float().unsqeeze(1)
