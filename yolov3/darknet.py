@@ -81,7 +81,7 @@ def create_modules(blocks):
                 
         elif (x["type"]=="upsample"):
             stride = x["stride"]
-            upsample = nn.Upsample(scale_factor=2, mode="bilinear")
+            upsample = nn.Upsample(scale_factor=2, mode="nearest")
             module.add_module("upsample_{}".format(index), upsample)
             
         elif (x["type"]=="route"):
@@ -94,7 +94,7 @@ def create_modules(blocks):
                 
             if start > 0:
                 start = start - index
-            if end:
+            if end>0:
                 end = end-index
             
             route = EmptyLayer()
@@ -160,9 +160,8 @@ class Darknet(nn.Module):
                 if len(layers)==1:
                     x = outputs[i + layers[0]]
                     
-                else :
-                    if layers[1]>0:
-                        layers[1] -= i
+                elif layers[1]>0:
+                    layers[1] -= i
                     map1 = outputs[i + layers[0]]
                     map2 = outputs[i + layers[1]]
                     
@@ -215,50 +214,55 @@ class Darknet(nn.Module):
                     batch_normalize = int(self.blocks[i+1]["batch_normalize"])
                 except:
                     batch_normalize = 0
+                    
                 conv = model[0]
-            if (batch_normalize):
-                bn = model[1]
-
-                num_bn_biases = bn.bias.numel()
-
-                bn_biases = torch.from_numpy(weights[ptr:ptr+num_bn_biases])
-                ptr += num_bn_biases
-
-                bn_weights = torch.from_numpy(weights[ptr:ptr+num_bn_biases])
-                ptr += num_bn_biases
-
-                bn_running_mean = torch.from_numpy(weights[ptr:ptr+num_bn_biases])
-                ptr += num_bn_biases
-
-                bn_running_var = torch.from_numpy(weights[ptr:ptr+num_bn_biases])
-                ptr += num_bn_biases
-
-                bn_biases = bn_biases.view_as(bn.bias.data)
-                bn_weights = bn_weights.view_as(bn.weight.data)
-                bn_running_mean = bn_running_mean.view_as(bn.running_mean)
-                bn_running_var = bn_running_var.view_as(bn.running_var)
-
-                #copy data into model
-                bn.bias.data.copy_(bn_biases)
-                bn.weight.data.copy_(bn_weights)
-                bn.running_mean.copy_(bn_running_mean)
-                bn.running_var.copy_(bn_running_var)
                 
-            else:
-                num_conv_bias = conv.bias.numel()
-                    
-                conv_biases = torch.from_numpy(weights[ptr:ptr+num_conv_bias])
-                ptr += num_conv_bias
-                    
-                conv_biases = conv_biases.view_as(conv.bias.data)
-                    
-                conv.bias.data.copy_(conv_biases)
-            
-        num_weights = conv.weight.numel()
-        conv_weights = torch.from_numpy(weights[ptr:ptr+num_weights])
-        ptr += num_weights
-        conv_weights = conv_weights.view_as(conv.weight.data)
-        conv.weight.data.copy_(conv_weights)
+                if (batch_normalize):
+                    bn = model[1]
+
+                    num_bn_biases = bn.bias.numel()
+
+                    bn_biases = torch.from_numpy(weights[ptr:ptr+num_bn_biases])
+                    ptr += num_bn_biases
+
+                    bn_weights = torch.from_numpy(weights[ptr:ptr+num_bn_biases])
+                    ptr += num_bn_biases
+
+                    bn_running_mean = torch.from_numpy(weights[ptr:ptr+num_bn_biases])
+                    ptr += num_bn_biases
+
+                    bn_running_var = torch.from_numpy(weights[ptr:ptr+num_bn_biases])
+                    ptr += num_bn_biases
+
+                    #Cast the loaded weights into dims of model weights
+                    bn_biases = bn_biases.view_as(bn.bias.data)
+                    bn_weights = bn_weights.view_as(bn.weight.data)
+                    bn_running_mean = bn_running_mean.view_as(bn.running_mean)
+                    bn_running_var = bn_running_var.view_as(bn.running_var)
+
+                    #copy data into model
+                    bn.bias.data.copy_(bn_biases)
+                    bn.weight.data.copy_(bn_weights)
+                    bn.running_mean.copy_(bn_running_mean)
+                    bn.running_var.copy_(bn_running_var)
+                
+                else:
+                    #convolutional biase
+                    num_conv_bias = conv.bias.numel()
+                    #load biase parameters
+                    conv_biases = torch.from_numpy(weights[ptr:ptr+num_conv_bias])
+                    ptr += num_conv_bias
+
+                    conv_biases = conv_biases.view_as(conv.bias.data)
+
+                    conv.bias.data.copy_(conv_biases)
+                
+                #weights for convolutional layer
+                num_weights = conv.weight.numel()
+                conv_weights = torch.from_numpy(weights[ptr:ptr+num_weights])
+                ptr += num_weights
+                conv_weights = conv_weights.view_as(conv.weight.data)
+                conv.weight.data.copy_(conv_weights)
             
             
 def get_test_input():
@@ -269,7 +273,14 @@ def get_test_input():
     img_ = torch.from_numpy(img_).float()
     img_ = Variable(img_)
     return img_
-                
+
+def get_parameters(model):
+    sum = 0
+    for module in model:
+        for layer in module:
+            for p in layer.parameters():
+                sum += p.numel()
+    return sum                
             
 
 if __name__ == "__main__":
@@ -277,13 +288,14 @@ if __name__ == "__main__":
     #file = r"\\wsl$\Ubuntu-18.04\home\paul\darknet\cfg\yolov3.cfg"
     blocks = parse_cfg("./cfg/yolov3.cfg")
     net_info, module = create_modules(blocks)
-    pprint(net_info)
-    print()
+    #print(get_parameters(module))
+    #pprint(net_info)
+    #print()
     pprint(module)
     #model = Darknet("./cfg/yolov3.cfg")
     #model.load_weights("yolov3.weights")
     #print(model.summary())
     #inp = get_test_input()
     #pred = model(inp, torch.cuda.is_available())
-    #print(pred, pred.shape, end='\n')
+    #print(pred.shape)
     

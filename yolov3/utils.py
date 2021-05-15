@@ -1,5 +1,60 @@
 import torch
 import numpy as np
+import cv2
+
+def bbox_iou(box1, box2):
+    """
+    Returns the IoU of two boxes
+    """
+    #Get the coordinates of bounding boxes
+    b1_x1, b1_y1, b1_x2, b1_y2 = box1[:,0], box1[:,1], box1[:,2], box1[:,3]
+    b2_x1, b2_y1, b2_x2, b2_y2 = box2[:,0], box2[:,1], box2[:,2], box2[:,3]
+    
+    #get coordinates of the intersecting rectangle
+    inter_rect_x1 = torch.max(b1_x1, b2_x1)
+    inter_rect_y1 = torch.max(b1_y1, b2_y1)
+    inter_rect_x2 = torch.min(b1_x2, b2_x2)
+    inter_rect_y2 = torch.min(b1_y2, b2_y2)
+    
+    #Intersection Area
+    inter_area = torch.clamp(inter_rect_x2-inter_rect_x1+1, min=0) * torch.clamp(inter_rect_y2-inter_rect_y1+1, min=0)
+    
+    #Union Area
+    b1_area = (b1_x2 - b1_x1+1)*(b1_y2 - b1_y1+1)
+    b2_area = (b2_x2 - b2_x1+1)*(b2_y2 - b2_y1+1)
+    
+    iou = inter_area/(b1_area+b2_area-inter_area)
+    
+    return iou
+            
+def unique(tensor):
+    tensor_np = tensor.cpu().numpy()
+    unique_np = np.unique(tensor_np)
+    unique_tensor = torch.from_numpy(unique_np)
+    #result = tensor.new(unique_tensor.shape)
+    #result.copy_(unique_tensor)
+    
+    return unique_tensor #result 
+
+def letterbox_image(img, inp_dim):
+    """ Resize image with unchanged aspect ratio using padding."""
+    img_w, img_h = img.shape
+    w, h = inp_dim
+    new_w = int(img_w * min(w/img_w, h/img_h))
+    new_h = int(img_h * min(w/img_w, h/img_h))
+    resized_image = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+    canvas = np.fill((inp_dim[0], inp_dim[1], 3), 128)
+    canvas[(h-new_h)//2:(h-new_h)//2 + new_h, (w-new_w)//2:(w-new_w)//2 + new_w, :] = resized_image
+    return canvas
+
+def prep_image(img, inp_dim):
+    """
+    Prepare images for the network.
+    """
+    img = cv2.resize(img, (inp_dim, inp_dim))
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).transpose((2,0,1))
+    img = torch.from_numpy(img).float().div(255.0).unsqueeze(0)
+    return img
 
 def predict_transform(prediction, inp_dim, anchors, num_classes, CUDA=False):
     batch_size = prediction.size(0)
@@ -34,6 +89,7 @@ def predict_transform(prediction, inp_dim, anchors, num_classes, CUDA=False):
     
     prediction[:,:,:2] += x_y_offset
     
+    #log space transform height and width
     anchors = torch.FloatTensor(anchors)
     
     if CUDA:
@@ -49,11 +105,12 @@ def predict_transform(prediction, inp_dim, anchors, num_classes, CUDA=False):
     
     return prediction
 
-def write_results(prediction, confidence, num_classes, nms_conf=0.5):
+def write_results(prediction, confidence, num_classes, nms_conf=0.4):
     # set all prediction less than confidence to zero
     conf_mask = (prediction[:,:,4] > confidence).float().unsqueeze(2)
     prediction = prediction*conf_mask
     
+    # transform bounding box coordinates to diagonal corners
     box_corner = prediction.new(prediction.shape)
     box_corner[:,:,0] = (prediction[:,:,0] - prediction[:,:,2]/2)    
     box_corner[:,:,1] = (prediction[:,:,1] - prediction[:,:,3]/2)    
@@ -64,7 +121,73 @@ def write_results(prediction, confidence, num_classes, nms_conf=0.5):
     
     batch_size = prediction.size(0)
     write = False
-    for i in range(batch_size):
-        image_pred = prediction[i]
-        max_conf, max_conf_score = torch.max(image_pred[:, 5:5+num_classes], 1)
-        max_conf = max_conf.float().unsqeeze(1)
+    
+    for ind in range(batch_size):
+        image_pred = prediction[ind]
+        # class with highest score
+        max_conf_score, max_conf_ind = torch.max(image_pred[:, 5:5+num_classes], 1)
+        max_conf_score = max_conf_score.float().unsqueeze(1)
+        max_conf_ind = max_conf_ind.float().unsqueeze(1)
+        seq = (image_pred[:,:5], max_conf_score, max_conf_ind)
+        image_pred = torch.cat(seq, 1)
+        #print(image_pred.shape)
+        
+        # get rid of boxes without object
+        non_zero_ind = torch.nonzero(image_pred[:,4])
+        image_pred_ = image_pred[non_zero_ind.squeeze(),:].view(-1,7)
+        #print(image_pred_.shape)
+        if not image_pred_.shape[0]:
+            continue
+        #Get various classes detected in the image
+        img_classes = unique(image_pred_[:,-1]) # -1 contains the class index
+        #print(img_classes)
+        #exit()
+        
+        for cls_ in img_classes:
+            # Perform NMS
+            
+            #get detections with one particular class
+            cls_mask = image_pred_*(image_pred_[:,-1]==cls_).float().unsqueeze(1)
+            class_mask_ind = torch.nonzero(cls_mask[:,-2]).squeeze()
+            image_pred_class = image_pred_[class_mask_ind].view(-1,7)
+            
+            # sort the detections such that the entry with maximum objectness
+            # confidence is at the top
+            _, conf_sort_index = torch.sort(image_pred_class[:,4], descending=True)
+            image_pred_class = image_pred_class[conf_sort_index]
+            
+            idx = image_pred_class.size(0) #number of detections
+            #print(idx)
+            #continue
+            
+            for i in range(idx):
+                #Get the IoU of all boxes that comes after the one with the highest score
+                try:
+                    ious = bbox_iou(image_pred_class[i].unsqueeze(0), image_pred_class[i+1:])
+                    #print(ious)
+                except (ValueError,IndexError):
+                    break
+                    
+                # zero out all detections with IoU>threshold
+                iou_mask = (ious < nms_conf).float().unsqueeze(1)
+                image_pred_class[i+1:] *= iou_mask
+                
+                non_zero_ind = torch.nonzero(image_pred_class[:,4]).squeeze()
+                image_pred_class = image_pred_class[non_zero_ind].view(-1,7)
+                #print(image_pred_class.size(0))
+            #exit()
+
+            batch_ind = image_pred_class.new(image_pred_class.size(0), 1).fill_(ind)
+            seq = batch_ind, image_pred_class
+            
+            if not write:
+                output = torch.cat(seq, 1)
+                write = True
+            else:
+                out = torch.cat(seq, 1)
+                output = torch.cat((output, out))
+                
+    try:
+        return output
+    except:
+        return 0
