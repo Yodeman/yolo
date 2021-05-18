@@ -8,7 +8,7 @@ import numpy as np
 import cv2
 import argparse
 import pickle as pkl
-import pandas as pd
+
 import random
 import os
 
